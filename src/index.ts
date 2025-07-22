@@ -39,7 +39,7 @@ import healthRoutes from './routes/health';
 import { errorHandler } from './utils/errorHandler';
 
 /**
- * Инициализация приложения
+ * Инициализация приложения new
  */
 const initApp = () => {
 	// Создаем экземпляр Express
