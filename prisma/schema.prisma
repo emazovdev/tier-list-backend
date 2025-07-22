@@ -1,0 +1,111 @@
+generator client {
+    provider = "prisma-client-js"
+    output   = "../generated/prisma"
+}
+
+datasource db {
+    provider = "postgresql"
+    url      = env("DATABASE_URL")
+}
+
+enum Role {
+    user
+    admin
+}
+
+model User {
+    id         String  @id @default(uuid())
+    telegramId String  @unique @map("telegram_id")
+    username   String?
+    role       Role    @default(user) @map("role")
+
+    createdAt DateTime @default(now()) @map("created_at")
+    updatedAt DateTime @updatedAt @map("updated_at")
+
+    // Связи
+    userEvents   UserEvent[]   @relation("UserEvents")
+    gameSessions GameSession[] @relation("UserSessions")
+
+    @@map("users")
+}
+
+model AdminUser {
+    id         String  @id @default(uuid())
+    telegramId String  @unique @map("telegram_id")
+    username   String?
+    addedBy    String? @map("added_by") // ID админа, который добавил этого админа
+
+    createdAt DateTime @default(now()) @map("created_at")
+    updatedAt DateTime @updatedAt @map("updated_at")
+
+    @@map("admin_users")
+}
+
+model Club {
+    id   String @id @default(uuid())
+    name String
+    logo String
+
+    createdAt DateTime @default(now()) @map("created_at")
+    updatedAt DateTime @updatedAt @map("updated_at")
+
+    players Players[]
+
+    @@map("clubs")
+}
+
+model Players {
+    id     String @id @default(uuid())
+    name   String
+    avatar String
+
+    clubId String @map("club_id")
+    club   Club   @relation(fields: [clubId], references: [id])
+
+    createdAt DateTime @default(now()) @map("created_at")
+    updatedAt DateTime @updatedAt @map("updated_at")
+
+    @@map("players")
+}
+
+model UserEvent {
+    id         String   @id @default(uuid())
+    telegramId String   @map("telegram_id")
+    eventType  String   @map("event_type") // 'app_start', 'game_start', 'game_completed'
+    metadata   Json? // дополнительные данные (например, clubId для игры)
+    createdAt  DateTime @default(now()) @map("created_at")
+
+    // Связь с пользователем
+    User User @relation("UserEvents", fields: [telegramId], references: [telegramId])
+
+    @@index([telegramId])
+    @@index([eventType])
+    @@index([createdAt])
+    @@map("user_events")
+}
+
+model GameSession {
+    id          String    @id @default(uuid())
+    telegramId  String    @map("telegram_id")
+    clubId      String?   @map("club_id")
+    startedAt   DateTime  @default(now()) @map("started_at")
+    completedAt DateTime? @map("completed_at")
+    isCompleted Boolean   @default(false) @map("is_completed")
+
+    // Связь с пользователем
+    User User @relation("UserSessions", fields: [telegramId], references: [telegramId])
+
+    @@index([telegramId])
+    @@index([isCompleted])
+    @@map("game_sessions")
+}
+
+model SystemSettings {
+    id        String   @id @default(uuid())
+    key       String   @unique
+    value     String
+    createdAt DateTime @default(now()) @map("created_at")
+    updatedAt DateTime @updatedAt @map("updated_at")
+
+    @@map("system_settings")
+}
