@@ -6,3 +6,4 @@ dist
 deploy_setup
 *.md
 *.sh
+nginx.conf
