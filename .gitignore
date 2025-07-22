@@ -5,3 +5,4 @@ generated
 dist
 deploy_setup
 *.md
+*.sh
