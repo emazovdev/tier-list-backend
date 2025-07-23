@@ -132,13 +132,18 @@ export const saveGameResults = async (
 
 			for (const player of allClubPlayers) {
 				// Проверяем в какие категории игрок НЕ попал
-				const categoriesNotIn = ['goat', 'Хорош', 'норм', 'Бездарь'].filter(
-					category => {
-						const playersInCategory =
-							gameResults.categorizedPlayerIds[category] || []
-						return !playersInCategory.includes(player.id)
-					}
-				)
+				// Поддерживаем как старые, так и новые категории
+				const categoriesNotIn = [
+					'goat',
+					'Хорош',
+					'норм',
+					'Бездарь',
+					'Бездна',
+				].filter(category => {
+					const playersInCategory =
+						gameResults.categorizedPlayerIds[category] || []
+					return !playersInCategory.includes(player.id)
+				})
 
 				// Для каждой категории где игрок НЕ попал, увеличиваем только totalGames
 				for (const categoryName of categoriesNotIn) {
