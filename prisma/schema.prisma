@@ -49,7 +49,8 @@ model Club {
     createdAt DateTime @default(now()) @map("created_at")
     updatedAt DateTime @updatedAt @map("updated_at")
 
-    players Players[]
+    players          Players[]
+    playerStatistics PlayerStatistics[]
 
     @@map("clubs")
 }
@@ -64,6 +65,9 @@ model Players {
 
     createdAt DateTime @default(now()) @map("created_at")
     updatedAt DateTime @updatedAt @map("updated_at")
+
+    // Связь со статистикой
+    statistics PlayerStatistics[]
 
     @@map("players")
 }
@@ -108,4 +112,27 @@ model SystemSettings {
     updatedAt DateTime @updatedAt @map("updated_at")
 
     @@map("system_settings")
+}
+
+model PlayerStatistics {
+    id           String  @id @default(uuid())
+    playerId     String  @map("player_id")
+    clubId       String  @map("club_id")
+    categoryName String  @map("category_name")
+    totalGames   Int     @default(0) @map("total_games")
+    categoryHits Int     @default(0) @map("category_hits")
+    hitPercentage Decimal @default(0.00) @map("hit_percentage") @db.Decimal(5, 2)
+    lastUpdated  DateTime @default(now()) @map("last_updated")
+    createdAt    DateTime @default(now()) @map("created_at")
+    updatedAt    DateTime @updatedAt @map("updated_at")
+
+    // Связи
+    player Players @relation(fields: [playerId], references: [id], onDelete: Cascade)
+    club   Club   @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+    @@unique([playerId, categoryName])
+    @@index([playerId])
+    @@index([clubId])
+    @@index([categoryName])
+    @@map("player_statistics")
 }
