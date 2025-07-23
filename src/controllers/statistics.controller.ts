@@ -2,6 +2,7 @@ import { NextFunction, Response } from 'express'
 import { prisma } from '../prisma'
 import { TelegramRequest } from '../types/api'
 import { logger } from '../utils/logger'
+import { getTelegramIdFromRequest, isUserAdmin } from '../utils/roleUtils'
 
 interface GameResult {
 	categorizedPlayerIds: { [categoryName: string]: string[] }
@@ -27,6 +28,19 @@ export const saveGameResults = async (
 	next: NextFunction
 ): Promise<void> => {
 	try {
+		// Проверяем роль пользователя - не сохраняем статистику для админов
+		const telegramId = getTelegramIdFromRequest(req)
+		if (telegramId) {
+			const isAdmin = await isUserAdmin(telegramId)
+			if (isAdmin) {
+				logger.info(
+					`Админ ${telegramId} играет в игру - статистика не сохраняется`
+				)
+				res.json({ ok: true, message: 'Результаты игры обработаны' })
+				return
+			}
+		}
+
 		const gameResults = req.body.gameResults as GameResult
 
 		if (
