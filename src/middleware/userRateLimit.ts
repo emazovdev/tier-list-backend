@@ -11,10 +11,10 @@ interface UserLimitState {
 
 /**
  * Специальный rate limiter для пользователей с интервалами
- * 5 раз в день + интервал 10 минут после 2-х запросов подряд
+ * 10 раз в день + интервал 10 минут после 2-х запросов подряд
  */
 export class UserImageRateLimit {
-	private readonly DAILY_LIMIT = 5; // Максимум 5 раз в день
+	private readonly DAILY_LIMIT = 10; // Максимум 10 раз в день
 	private readonly CONSECUTIVE_LIMIT = 2; // После 2 запросов подряд - интервал
 	private readonly INTERVAL_MINUTES = 10; // Интервал 10 минут
 	private readonly RESET_HOUR = 0; // Сброс в полночь

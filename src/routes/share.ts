@@ -19,7 +19,7 @@ export const createShareRoutes = (botService: TelegramBotService) => {
 	router.post(
 		'/results',
 		validateInitData,
-		userImageRateLimit.middleware(), // Новый лимит: 5 раз в день + интервал 10 мин
+		userImageRateLimit.middleware(), // Новый лимит: 10 раз в день + интервал 10 мин
 		createRateLimit.shareResults().middleware(), // Дополнительная защита от спама
 		shareController.shareResults,
 	);
