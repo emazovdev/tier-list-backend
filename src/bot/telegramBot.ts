@@ -1,10 +1,28 @@
 import fs from 'fs'
-import TelegramBot from 'node-telegram-bot-api'
+import TelegramBot, {
+	InlineKeyboardMarkup,
+	SendMessageOptions,
+	SendPhotoOptions,
+} from 'node-telegram-bot-api'
 import path from 'path'
 import { config } from '../config/env'
 import { checkIsAdminUser } from '../middleware/checkAdminRole'
 import { prisma } from '../prisma'
 import { logger } from '../utils/logger'
+
+type ReleaseState = 'awaiting_content' | 'awaiting_confirm'
+
+interface ReleaseDraft {
+	text?: string
+	photoFileId?: string // file_id из Telegram
+}
+
+interface ReleaseSession {
+	adminTelegramId: string // строка, как приходит из Telegram
+	chatId: number // куда показывать превью/статусы
+	state: ReleaseState
+	draft?: ReleaseDraft
+}
 
 /**
  * Класс для управления Telegram ботом
@@ -13,6 +31,12 @@ import { logger } from '../utils/logger'
 export class TelegramBotService {
 	private bot: TelegramBot | null = null
 	private isClusterMaster: boolean
+	private releaseSessions: Map<string, ReleaseSession> = new Map()
+
+	// Настройки рассылки
+	private static readonly BROADCAST_BATCH_SIZE = 25 // сколько сообщений параллельно
+	private static readonly BROADCAST_DELAY_BETWEEN_BATCH = 1500 // мс пауза между батчами (~16-17 msg/s)
+	private static readonly PROGRESS_EVERY_BATCHES = 20 // как часто писать прогресс админу
 
 	constructor() {
 		// Проверяем, является ли процесс master в кластере
@@ -244,19 +268,192 @@ export class TelegramBotService {
 			}
 		})
 
+		// /release (только для админов)
+		this.bot.onText(/\/release/, async msg => {
+			const chatId = msg.chat.id
+			const telegramId = msg.from?.id?.toString()
+			const userName =
+				msg.from?.username || msg.from?.first_name || 'пользователь'
+
+			try {
+				logger.info(
+					`🚀 Команда /release от ${userName} (${chatId})`,
+					'TELEGRAM_BOT'
+				)
+
+				if (!telegramId) {
+					await this.bot?.sendMessage(
+						chatId,
+						'❌ Не удалось определить ваш ID пользователя'
+					)
+					return
+				}
+
+				const isAdmin = await checkIsAdminUser(telegramId)
+				if (!isAdmin) {
+					await this.bot?.sendMessage(
+						chatId,
+						'❌ Доступ запрещен. Команда только для админов.'
+					)
+					return
+				}
+
+				// Сброс предыдущей сессии, если была
+				this.releaseSessions.delete(telegramId)
+
+				// Старт новой сессии
+				this.releaseSessions.set(telegramId, {
+					adminTelegramId: telegramId,
+					chatId,
+					state: 'awaiting_content',
+				})
+
+				await this.bot?.sendMessage(
+					chatId,
+					'📝 Пришлите текст релиза одним сообщением ИЛИ фото с подписью. После этого я покажу превью с кнопками подтверждения.'
+				)
+			} catch (error) {
+				logger.error('❌ Ошибка обработки /release:', 'TELEGRAM_BOT', error)
+				await this.bot?.sendMessage(
+					chatId,
+					'❌ Произошла ошибка при обработке команды'
+				)
+			}
+		})
+
+		// callback_query для подтверждения/отмены релиза
+		this.bot.on('callback_query', async query => {
+			try {
+				if (!query.data || !query.from?.id) return
+				const telegramId = query.from.id.toString()
+				const session = this.releaseSessions.get(telegramId)
+				if (!session) return
+
+				const isAdmin = await checkIsAdminUser(telegramId).catch(() => false)
+				if (!isAdmin) {
+					await this.bot?.answerCallbackQuery(query.id, {
+						text: '⛔ Не для вас.',
+					})
+					return
+				}
+
+				if (query.data === 'release_cancel') {
+					this.releaseSessions.delete(telegramId)
+					await this.bot?.answerCallbackQuery(query.id, { text: 'Отменено.' })
+					await this.bot?.sendMessage(session.chatId, '❌ Рассылка отменена.')
+					return
+				}
+
+				if (query.data === 'release_confirm') {
+					if (!session.draft) {
+						await this.bot?.answerCallbackQuery(query.id, {
+							text: 'Нет данных для отправки.',
+						})
+						return
+					}
+
+					await this.bot?.answerCallbackQuery(query.id, {
+						text: 'Отправляю всем...',
+					})
+					await this.bot?.sendMessage(
+						session.chatId,
+						'📣 Начинаю рассылку. Пожалуйста, не спамьте командами.'
+					)
+
+					try {
+						await this.broadcastRelease(session)
+						await this.bot?.sendMessage(session.chatId, '🏁 Готово.')
+					} catch (e) {
+						logger.error('❌ Ошибка в broadcastRelease:', 'TELEGRAM_BOT', e)
+						await this.bot?.sendMessage(
+							session.chatId,
+							'❌ Произошла ошибка при рассылке.'
+						)
+					} finally {
+						this.releaseSessions.delete(telegramId)
+					}
+				}
+			} catch (e) {
+				logger.error(
+					'❌ Ошибка в callback_query обработчике:',
+					'TELEGRAM_BOT',
+					e
+				)
+			}
+		})
+
 		// Обработчик для всех остальных команд
 		this.bot.on('message', async msg => {
-			if (
-				msg.text &&
-				!msg.text.startsWith('/start') &&
-				!msg.text.startsWith('/cleanup')
-			) {
-				try {
-					const chatId = msg.chat.id
-					await this.sendWebAppButton(chatId)
-				} catch (error) {
-					logger.error('❌ Ошибка обработки сообщения:', 'TELEGRAM_BOT', error)
+			try {
+				const chatId = msg.chat.id
+				const telegramId = msg.from?.id?.toString()
+
+				// Если есть сессия релиза — обрабатываем её в приоритете
+				if (telegramId) {
+					const session = this.releaseSessions.get(telegramId)
+					if (session) {
+						// Только админ может взаимодействовать с сессией
+						const isAdmin = await checkIsAdminUser(telegramId).catch(
+							() => false
+						)
+						if (isAdmin && session.state === 'awaiting_content') {
+							const hasPhoto = !!msg.photo && msg.photo.length > 0
+							const caption =
+								typeof msg.caption === 'string' ? msg.caption.trim() : undefined
+							const textOnly =
+								typeof msg.text === 'string' ? msg.text.trim() : undefined
+
+							if (!hasPhoto && !textOnly) {
+								await this.bot?.sendMessage(
+									session.chatId,
+									'❌ Нужно отправить текст или фото с подписью.'
+								)
+								return
+							}
+
+							const draft: ReleaseDraft = {}
+							if (hasPhoto) {
+								const best = msg.photo!.slice(-1)[0]
+								draft.photoFileId = best.file_id
+								if (caption) draft.text = caption
+							} else if (textOnly) {
+								draft.text = textOnly
+							}
+
+							session.draft = draft
+							session.state = 'awaiting_confirm'
+							this.releaseSessions.set(telegramId, session)
+
+							await this.bot?.sendMessage(
+								session.chatId,
+								'👀 Превью релиза. Подтвердите отправку всем.'
+							)
+							await this.sendReleasePreview(session)
+							return // не продолжаем дефолтную обработку
+						}
+
+						if (isAdmin && session.state === 'awaiting_confirm') {
+							// Вежливо говорим пользоваться кнопками
+							await this.bot?.sendMessage(
+								session.chatId,
+								'ℹ️ Используйте кнопки ✅ или ❌ под превью для подтверждения или отмены.'
+							)
+							return
+						}
+					}
 				}
+
+				// Существующий дефолт: на любые прочие сообщения показываем кнопку открытия WebApp
+				if (
+					msg.text &&
+					!msg.text.startsWith('/start') &&
+					!msg.text.startsWith('/cleanup') &&
+					!msg.text.startsWith('/release')
+				) {
+					await this.sendWebAppButton(chatId)
+				}
+			} catch (error) {
+				logger.error('❌ Ошибка обработки сообщения:', 'TELEGRAM_BOT', error)
 			}
 		})
 	}
@@ -303,6 +500,174 @@ export class TelegramBotService {
 		} catch (error) {
 			logger.error('❌ Ошибка отправки сообщения:', 'TELEGRAM_BOT', error)
 		}
+	}
+
+	/**
+	 * Кнопка запуска мини-аппа
+	 */
+	private buildAppKeyboard(): SendMessageOptions | SendPhotoOptions {
+		const inlineKeyboard: any[] = []
+		if (config.webApp.url.startsWith('https://')) {
+			inlineKeyboard.push([
+				{ text: '🎯 Открыть мини-апп', web_app: { url: config.webApp.url } },
+			])
+		}
+		return inlineKeyboard.length
+			? {
+					reply_markup: {
+						inline_keyboard: inlineKeyboard,
+					},
+			  }
+			: {}
+	}
+
+	/**
+	 * Превью релиза админу
+	 */
+	private async sendReleasePreview(session: ReleaseSession) {
+		const { chatId, draft } = session
+		if (!this.bot || !draft) return
+
+		const confirmKeyboard: InlineKeyboardMarkup = {
+			inline_keyboard: [
+				[{ text: '✅ Отправить всем', callback_data: 'release_confirm' }],
+				[{ text: '❌ Отменить', callback_data: 'release_cancel' }],
+			],
+		}
+
+		if (draft.photoFileId) {
+			await this.bot.sendPhoto(chatId, draft.photoFileId, {
+				caption: draft.text || '',
+				reply_markup: confirmKeyboard,
+			})
+		} else {
+			await this.bot.sendMessage(chatId, draft.text || '(пусто)', {
+				reply_markup: confirmKeyboard,
+			})
+		}
+	}
+
+	/**
+	 * Массовая рассылка по базе
+	 */
+	private async broadcastRelease(session: ReleaseSession) {
+		if (!this.bot || !session.draft) return
+		const appKeyboard = this.buildAppKeyboard()
+		const draft = session.draft
+
+		// Берём всех пользователей
+		const users = await prisma.user.findMany({
+			select: { telegramId: true },
+			where: { telegramId: { not: undefined } },
+		})
+
+		// Чат-айди как строки (без потери точности)
+		const audience: string[] = users
+			.map(u => String((u as any).telegramId))
+			.filter(s => !!s && s !== session.adminTelegramId)
+
+		const total = audience.length
+		logger.info(`📣 Начинаем рассылку: ${total} получателей`, 'TELEGRAM_BOT')
+
+		// Разбиваем на батчи
+		const batches: string[][] = []
+		for (
+			let i = 0;
+			i < audience.length;
+			i += TelegramBotService.BROADCAST_BATCH_SIZE
+		) {
+			batches.push(
+				audience.slice(i, i + TelegramBotService.BROADCAST_BATCH_SIZE)
+			)
+		}
+
+		let sent = 0
+		let failed = 0
+
+		for (let b = 0; b < batches.length; b++) {
+			const batch = batches[b]
+
+			// Отправляем параллельно, но в пределах батча
+			const results = await Promise.allSettled(
+				batch.map(async chatIdStr => {
+					try {
+						if (draft.photoFileId) {
+							await this.bot!.sendPhoto(chatIdStr, draft.photoFileId!, {
+								caption: draft.text || '',
+								...(appKeyboard as SendPhotoOptions),
+							})
+						} else {
+							await this.bot!.sendMessage(
+								chatIdStr,
+								draft.text || '',
+								appKeyboard as any
+							)
+						}
+						return true
+					} catch (e: any) {
+						// Обработка 429 (flood)
+						const retryAfter =
+							e?.response?.body?.parameters?.retry_after ||
+							e?.response?.parameters?.retry_after
+						if (retryAfter && Number.isFinite(Number(retryAfter))) {
+							const ms = Number(retryAfter) * 1000
+							logger.warn(`⏳ Flood control: ждем ${ms} мс`, 'TELEGRAM_BOT')
+							await new Promise(r => setTimeout(r, ms))
+							// Одна повторная попытка
+							try {
+								if (draft.photoFileId) {
+									await this.bot!.sendPhoto(chatIdStr, draft.photoFileId!, {
+										caption: draft.text || '',
+										...(appKeyboard as SendPhotoOptions),
+									})
+								} else {
+									await this.bot!.sendMessage(
+										chatIdStr,
+										draft.text || '',
+										appKeyboard as any
+									)
+								}
+								return true
+							} catch (e2) {
+								throw e2
+							}
+						}
+						throw e
+					}
+				})
+			)
+
+			for (const r of results) {
+				if (r.status === 'fulfilled' && r.value === true) sent++
+				else failed++
+			}
+
+			// Периодически пишем прогресс админу
+			if ((b + 1) % TelegramBotService.PROGRESS_EVERY_BATCHES === 0) {
+				const done = Math.min(sent + failed, total)
+				await this.bot.sendMessage(
+					session.chatId,
+					`📊 Прогресс: ${done}/${total}. Успешно: ${sent}, ошибок: ${failed}.`
+				)
+			}
+
+			// Пауза между батчами
+			if (b < batches.length - 1) {
+				await new Promise(r =>
+					setTimeout(r, TelegramBotService.BROADCAST_DELAY_BETWEEN_BATCH)
+				)
+			}
+		}
+
+		await this.bot.sendMessage(
+			session.chatId,
+			`✅ Рассылка завершена.\nОтправлено: ${sent}\nОшибок: ${failed}\nВсего получателей: ${total}`
+		)
+
+		logger.info(
+			`🏁 Рассылка завершена: всего=${total}, отправлено=${sent}, ошибок=${failed}`,
+			'TELEGRAM_BOT'
+		)
 	}
 
 	/**
