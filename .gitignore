@@ -7,3 +7,4 @@ deploy_setup
 *.md
 *.sh
 nginx.conf
+.DS_Store
