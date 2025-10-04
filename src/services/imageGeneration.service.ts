@@ -1,25 +1,23 @@
-import { config } from '../config/env';
-import { prisma } from '../prisma';
-import { StorageService } from './storage.service';
-import { generateImageInWorker } from '../workers/imageWorker';
-import { puppeteerPoolService } from './puppeteerPool.service';
-import { logger } from '../utils/logger';
-import fs from 'fs';
-import path from 'path';
+import fs from 'fs'
+import path from 'path'
+import { prisma } from '../prisma'
+import { logger } from '../utils/logger'
+import { puppeteerPoolService } from './puppeteerPool.service'
+import { TimewebStorageService } from './timewebStorage.service'
 
 // Обновленная структура данных для генерации изображения
 export interface ShareImageData {
-	categorizedPlayerIds: { [categoryName: string]: string[] };
-	categories: Array<{ name: string; color: string; slots: number }>;
-	clubId: string;
+	categorizedPlayerIds: { [categoryName: string]: string[] }
+	categories: Array<{ name: string; color: string; slots: number }>
+	clubId: string
 }
 
 // Настройки качества изображения
 export interface ImageQualityOptions {
-	quality?: number; // 1-100, по умолчанию 85
-	width?: number; // ширина в пикселях, по умолчанию 550
-	height?: number; // высота в пикселях, по умолчанию 800
-	optimizeForSpeed?: boolean; // оптимизация для скорости, по умолчанию true
+	quality?: number // 1-100, по умолчанию 85
+	width?: number // ширина в пикселях, по умолчанию 550
+	height?: number // высота в пикселях, по умолчанию 800
+	optimizeForSpeed?: boolean // оптимизация для скорости, по умолчанию true
 }
 
 /**
@@ -42,55 +40,55 @@ function createPlayerAvatarPlaceholder(playerName: string): string {
 		'#FD79A8',
 		'#74B9FF',
 		'#00B894',
-	];
+	]
 
 	// Генерируем цвет на основе имени игрока
-	let hash = 0;
+	let hash = 0
 	for (let i = 0; i < playerName.length; i++) {
-		hash = playerName.charCodeAt(i) + ((hash << 5) - hash);
+		hash = playerName.charCodeAt(i) + ((hash << 5) - hash)
 	}
-	const color = colors[Math.abs(hash) % colors.length];
+	const color = colors[Math.abs(hash) % colors.length]
 
-	const initial = playerName.charAt(0).toUpperCase();
+	const initial = playerName.charAt(0).toUpperCase()
 
 	return `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='16' fill='${encodeURIComponent(
-		color,
-	)}'/%3E%3Ctext x='50%25' y='50%25' font-size='14' text-anchor='middle' dy='.3em' fill='white' font-family='Arial, sans-serif' font-weight='bold'%3E${initial}%3C/text%3E%3C/svg%3E`;
+		color
+	)}'/%3E%3Ctext x='50%25' y='50%25' font-size='14' text-anchor='middle' dy='.3em' fill='white' font-family='Arial, sans-serif' font-weight='bold'%3E${initial}%3C/text%3E%3C/svg%3E`
 }
 
 /**
  * Сервис для генерации изображений результатов игры
  */
 export class ImageGenerationService {
-	private static instance: ImageGenerationService;
+	private static instance: ImageGenerationService
 
 	// Кэш для ресурсов с TTL
 	private resourcesCache: {
-		fonts: Map<string, { data: string; timestamp: number }>;
-		images: Map<string, { data: string; timestamp: number }>;
-		isInitialized: boolean;
-		ttl: number; // время жизни кэша в миллисекундах (1 час)
+		fonts: Map<string, { data: string; timestamp: number }>
+		images: Map<string, { data: string; timestamp: number }>
+		isInitialized: boolean
+		ttl: number // время жизни кэша в миллисекундах (1 час)
 	} = {
 		fonts: new Map(),
 		images: new Map(),
 		isInitialized: false,
 		ttl: 60 * 60 * 1000, // 1 час
-	};
+	}
 
 	private constructor() {}
 
 	public static getInstance(): ImageGenerationService {
 		if (!ImageGenerationService.instance) {
-			ImageGenerationService.instance = new ImageGenerationService();
+			ImageGenerationService.instance = new ImageGenerationService()
 		}
-		return ImageGenerationService.instance;
+		return ImageGenerationService.instance
 	}
 
 	/**
 	 * Проверяет, актуален ли кэш
 	 */
 	private isCacheValid(timestamp: number): boolean {
-		return Date.now() - timestamp < this.resourcesCache.ttl;
+		return Date.now() - timestamp < this.resourcesCache.ttl
 	}
 
 	/**
@@ -98,7 +96,7 @@ export class ImageGenerationService {
 	 */
 	public async initializeResources(): Promise<void> {
 		if (this.resourcesCache.isInitialized) {
-			return;
+			return
 		}
 
 		try {
@@ -106,30 +104,30 @@ export class ImageGenerationService {
 			const fontPromises = [
 				this.loadFontAsBase64('Montserrat-Regular.ttf'),
 				this.loadFontAsBase64('Montserrat-Bold.ttf'),
-			];
+			]
 
 			// Загружаем изображения параллельно
 			const imagePromises = [
 				this.loadImageAsBase64('main_bg.jpg'),
 				this.loadImageAsBase64('main_logo.png'),
-			];
+			]
 
 			// Ждем загрузки всех ресурсов
-			await Promise.all([...fontPromises, ...imagePromises]);
+			await Promise.all([...fontPromises, ...imagePromises])
 
-			this.resourcesCache.isInitialized = true;
+			this.resourcesCache.isInitialized = true
 			logger.info(
 				'Ресурсы для генерации изображений инициализированы',
-				'IMAGE_GENERATION',
-			);
+				'IMAGE_GENERATION'
+			)
 		} catch (error) {
 			logger.error(
 				'Ошибка при инициализации ресурсов',
 				'IMAGE_GENERATION',
-				error,
-			);
+				error
+			)
 			// Продолжаем работу даже с ошибками
-			this.resourcesCache.isInitialized = true;
+			this.resourcesCache.isInitialized = true
 		}
 	}
 
@@ -139,52 +137,47 @@ export class ImageGenerationService {
 	private async loadFontAsBase64(fontFileName: string): Promise<string> {
 		try {
 			// Проверяем кэш
-			const cached = this.resourcesCache.fonts.get(fontFileName);
+			const cached = this.resourcesCache.fonts.get(fontFileName)
 			if (cached && this.isCacheValid(cached.timestamp)) {
-				return cached.data;
+				return cached.data
 			}
 
 			// Путь к шрифтам относительно корня проекта
-			const fontPath = path.join(
-				process.cwd(),
-				'assets',
-				'fonts',
-				fontFileName,
-			);
+			const fontPath = path.join(process.cwd(), 'assets', 'fonts', fontFileName)
 
 			// Проверяем существование файла асинхронно
 			try {
-				await fs.promises.access(fontPath);
+				await fs.promises.access(fontPath)
 			} catch {
-				logger.silentImageProcess(`Шрифт не найден: ${fontFileName}`);
+				logger.silentImageProcess(`Шрифт не найден: ${fontFileName}`)
 				this.resourcesCache.fonts.set(fontFileName, {
 					data: '',
 					timestamp: Date.now(),
-				});
-				return '';
+				})
+				return ''
 			}
 
 			// Читаем и кодируем шрифт в base64 асинхронно
-			const fontBuffer = await fs.promises.readFile(fontPath);
-			const base64Font = fontBuffer.toString('base64');
+			const fontBuffer = await fs.promises.readFile(fontPath)
+			const base64Font = fontBuffer.toString('base64')
 
 			// Кэшируем результат с временной меткой
 			this.resourcesCache.fonts.set(fontFileName, {
 				data: base64Font,
 				timestamp: Date.now(),
-			});
-			return base64Font;
+			})
+			return base64Font
 		} catch (error) {
 			logger.silentImageProcess(
 				`Ошибка при загрузке шрифта ${fontFileName}: ${
 					(error as any)?.message || 'Unknown error'
-				}`,
-			);
+				}`
+			)
 			this.resourcesCache.fonts.set(fontFileName, {
 				data: '',
 				timestamp: Date.now(),
-			});
-			return '';
+			})
+			return ''
 		}
 	}
 
@@ -194,55 +187,55 @@ export class ImageGenerationService {
 	private async loadImageAsBase64(imageFileName: string): Promise<string> {
 		try {
 			// Проверяем кэш
-			const cached = this.resourcesCache.images.get(imageFileName);
+			const cached = this.resourcesCache.images.get(imageFileName)
 			if (cached && this.isCacheValid(cached.timestamp)) {
-				return cached.data;
+				return cached.data
 			}
 
 			// Путь к изображениям относительно корня проекта
-			const imagePath = path.join(process.cwd(), 'assets', imageFileName);
+			const imagePath = path.join(process.cwd(), 'assets', imageFileName)
 
 			// Проверяем существование файла асинхронно
 			try {
-				await fs.promises.access(imagePath);
+				await fs.promises.access(imagePath)
 			} catch {
-				console.warn(`⚠️ Изображение не найдено: ${imagePath}`);
+				console.warn(`⚠️ Изображение не найдено: ${imagePath}`)
 				this.resourcesCache.images.set(imageFileName, {
 					data: '',
 					timestamp: Date.now(),
-				});
-				return '';
+				})
+				return ''
 			}
 
 			// Читаем и кодируем изображение в base64 асинхронно
-			const imageBuffer = await fs.promises.readFile(imagePath);
-			const extension = path.extname(imageFileName).toLowerCase();
+			const imageBuffer = await fs.promises.readFile(imagePath)
+			const extension = path.extname(imageFileName).toLowerCase()
 
 			// Определяем MIME-тип
-			let mimeType = 'image/jpeg';
-			if (extension === '.png') mimeType = 'image/png';
+			let mimeType = 'image/jpeg'
+			if (extension === '.png') mimeType = 'image/png'
 			else if (extension === '.jpg' || extension === '.jpeg')
-				mimeType = 'image/jpeg';
-			else if (extension === '.gif') mimeType = 'image/gif';
-			else if (extension === '.webp') mimeType = 'image/webp';
+				mimeType = 'image/jpeg'
+			else if (extension === '.gif') mimeType = 'image/gif'
+			else if (extension === '.webp') mimeType = 'image/webp'
 
 			const dataUri = `data:${mimeType};base64,${imageBuffer.toString(
-				'base64',
-			)}`;
+				'base64'
+			)}`
 
 			// Кэшируем результат с временной меткой
 			this.resourcesCache.images.set(imageFileName, {
 				data: dataUri,
 				timestamp: Date.now(),
-			});
-			return dataUri;
+			})
+			return dataUri
 		} catch (error) {
-			console.error('❌ Ошибка при загрузке изображения:', error);
+			console.error('❌ Ошибка при загрузке изображения:', error)
 			this.resourcesCache.images.set(imageFileName, {
 				data: '',
 				timestamp: Date.now(),
-			});
-			return '';
+			})
+			return ''
 		}
 	}
 
@@ -254,13 +247,13 @@ export class ImageGenerationService {
 		const fonts = [
 			{ file: 'Montserrat-Regular.ttf', weight: 400, style: 'normal' },
 			{ file: 'Montserrat-Bold.ttf', weight: 700, style: 'normal' },
-		];
+		]
 
 		// Загружаем все шрифты параллельно
-		const fontPromises = fonts.map(async (font) => {
-			const base64Font = await this.loadFontAsBase64(font.file);
+		const fontPromises = fonts.map(async font => {
+			const base64Font = await this.loadFontAsBase64(font.file)
 
-			if (!base64Font) return '';
+			if (!base64Font) return ''
 
 			return `
       @font-face {
@@ -270,79 +263,79 @@ export class ImageGenerationService {
         font-style: ${font.style};
         font-display: swap;
       }
-    `;
-		});
+    `
+		})
 
-		const fontCssArray = await Promise.all(fontPromises);
-		return fontCssArray.filter((css) => css !== '').join('\n');
+		const fontCssArray = await Promise.all(fontPromises)
+		return fontCssArray.filter(css => css !== '').join('\n')
 	}
 
 	/**
 	 * Получает данные клуба и игроков из базы данных с кэшированием
 	 */
 	private async getClubAndPlayersData(data: ShareImageData) {
-		const storageService = new StorageService();
+		const storageService = new TimewebStorageService()
 
 		// Используем оптимизированное логирование
-		logger.silentImageProcess(`Получение данных для клуба ${data.clubId}`);
+		logger.silentImageProcess(`Получение данных для клуба ${data.clubId}`)
 
 		// Получаем клуб с подписанным URL логотипа
 		const club = await prisma.club.findUnique({
 			where: { id: data.clubId },
-		});
+		})
 
 		if (!club) {
-			throw new Error('Клуб не найден');
+			throw new Error('Клуб не найден')
 		}
 
-		logger.silentImageProcess(`Клуб найден: ${club.name}`);
+		logger.silentImageProcess(`Клуб найден: ${club.name}`)
 
 		// Получаем всех игроков одним запросом для оптимизации
-		const allPlayerIds = Object.values(data.categorizedPlayerIds).flat();
+		const allPlayerIds = Object.values(data.categorizedPlayerIds).flat()
 		const players = await prisma.players.findMany({
 			where: { id: { in: allPlayerIds } },
-		});
+		})
 
 		logger.silentImageProcess(
-			`Игроков найдено: ${players.length} из ${allPlayerIds.length}`,
-		);
+			`Игроков найдено: ${players.length} из ${allPlayerIds.length}`
+		)
 
 		// Собираем все ключи изображений для батч-обработки
-		const logoKeys = club.logo ? [club.logo] : [];
+		const logoKeys = club.logo ? [club.logo] : []
 		const avatarKeys = players
-			.map((player) => player.avatar)
-			.filter(Boolean) as string[];
+			.map(player => player.avatar)
+			.filter(Boolean) as string[]
 
 		// Получаем все URL за один раз
 		const [logoUrls, avatarUrls] = await Promise.all([
 			storageService.getBatchFastUrls(logoKeys, 'logo'),
 			storageService.getBatchFastUrls(avatarKeys, 'avatar'),
-		]);
+		])
 
 		logger.silentImageProcess(
-			`URLs получены: логотипы ${logoKeys.length}, аватары ${avatarKeys.length}`,
-		);
+			`URLs получены: логотипы ${logoKeys.length}, аватары ${avatarKeys.length}`
+		)
 
-		const clubLogoUrl = club.logo ? logoUrls[club.logo] || '' : '';
+		const clubLogoUrl = club.logo ? logoUrls[club.logo] || '' : ''
 
 		// Создаем карту игроков для быстрого поиска
-		const playersMap = new Map();
+		const playersMap = new Map()
 
 		for (const player of players) {
-			const avatarUrl = player.avatar ? avatarUrls[player.avatar] || '' : '';
+			const avatarUrl = player.avatar ? avatarUrls[player.avatar] || '' : ''
 
 			playersMap.set(player.id, {
 				id: player.id,
 				name: player.name,
 				avatarUrl,
-			});
+			})
 		}
 
 		logger.silentImageProcess(
-			`Карта игроков создана: ${playersMap.size} записей`,
-		);
+			`Карта игроков создана: ${playersMap.size} записей`
+		)
 
-		return { club, clubLogoUrl, playersMap };
+		return { club, clubLogoUrl, playersMap }
 	}
 
 	/**
@@ -350,71 +343,71 @@ export class ImageGenerationService {
 	 */
 	private async generateHTML(
 		data: ShareImageData,
-		options: ImageQualityOptions = {},
+		options: ImageQualityOptions = {}
 	): Promise<string> {
 		const { club, clubLogoUrl, playersMap } = await this.getClubAndPlayersData(
-			data,
-		);
+			data
+		)
 
 		// Убеждаемся, что ресурсы инициализированы
-		await this.initializeResources();
+		await this.initializeResources()
 
-		let fontFaces = '';
+		let fontFaces = ''
 		try {
-			fontFaces = await this.generateFontFaces();
+			fontFaces = await this.generateFontFaces()
 		} catch (error) {
-			console.error('❌ Ошибка при загрузке шрифтов:', error);
+			console.error('❌ Ошибка при загрузке шрифтов:', error)
 			// Продолжаем работу без локальных шрифтов
 		}
 
 		// Загружаем локальные изображения в base64 (теперь из кэша)
-		const backgroundImage = await this.loadImageAsBase64('main_bg.jpg');
-		const mainLogo = await this.loadImageAsBase64('main_logo.png');
+		const backgroundImage = await this.loadImageAsBase64('main_bg.jpg')
+		const mainLogo = await this.loadImageAsBase64('main_logo.png')
 
 		// Функция обработки названия клуба (синхронизировано с клиентом)
 		const getDisplayClubName = (clubName: string): string => {
-			const hasClub = clubName.toLowerCase().includes('клуб');
-			const seasonMatch = clubName.match(/(\d{4}\/\d{2})/);
+			const hasClub = clubName.toLowerCase().includes('клуб')
+			const seasonMatch = clubName.match(/(\d{4}\/\d{2})/)
 
 			if (hasClub && seasonMatch) {
-				const season = seasonMatch[1];
-				return `Мой тир-лист клубов ${season}`;
+				const season = seasonMatch[1]
+				return `Мой тир-лист клубов ${season}`
 			}
 
-			return clubName;
-		};
+			return clubName
+		}
 
-		const displayClubName = getDisplayClubName(club.name);
-		const showClubLogo = displayClubName === club.name;
+		const displayClubName = getDisplayClubName(club.name)
+		const showClubLogo = displayClubName === club.name
 
 		const playersHTML = data.categories
-			.map((category) => {
-				const playerIds = data.categorizedPlayerIds[category.name] || [];
+			.map(category => {
+				const playerIds = data.categorizedPlayerIds[category.name] || []
 
 				const playersListHTML =
 					playerIds.length > 0
 						? playerIds
-								.map((playerId) => {
-									const player = playersMap.get(playerId);
+								.map(playerId => {
+									const player = playersMap.get(playerId)
 
 									if (!player) {
-										console.warn(`⚠️ Игрок с ID ${playerId} не найден`);
-										return '';
+										console.warn(`⚠️ Игрок с ID ${playerId} не найден`)
+										return ''
 									}
 
 									const playerAvatar =
 										player.avatarUrl ||
-										createPlayerAvatarPlaceholder(player.name);
+										createPlayerAvatarPlaceholder(player.name)
 
 									return `<img src="${playerAvatar}" alt="${
 										player.name
 									}" class="player-avatar" onerror="this.src='${createPlayerAvatarPlaceholder(
-										player.name,
-									)}'" />`;
+										player.name
+									)}'" />`
 								})
-								.filter((html) => html !== '') // Убираем пустые строки
+								.filter(html => html !== '') // Убираем пустые строки
 								.join('')
-						: '<div class="empty-category">— Пусто</div>';
+						: '<div class="empty-category">— Пусто</div>'
 
 				return `
         <div class="category-section" style="background-color: ${
@@ -425,9 +418,9 @@ export class ImageGenerationService {
             	${playersListHTML}
           	</div>
         </div>
-      `;
+      `
 			})
-			.join('');
+			.join('')
 
 		return `
       <!DOCTYPE html>
@@ -624,7 +617,7 @@ export class ImageGenerationService {
         	</div>
       </body>
       </html>
-    `;
+    `
 	}
 
 	/**
@@ -632,7 +625,7 @@ export class ImageGenerationService {
 	 */
 	public async generateResultsImage(
 		data: ShareImageData,
-		options: ImageQualityOptions = {},
+		options: ImageQualityOptions = {}
 	): Promise<{ imageBuffer: Buffer; club: { name: string } }> {
 		try {
 			// Устанавливаем значения по умолчанию (оптимизированные размеры)
@@ -641,22 +634,22 @@ export class ImageGenerationService {
 				width: 550, // Оптимальный размер для аватарок
 				height: 800, // Оптимальное соотношение сторон
 				optimizeForSpeed: true,
-			};
+			}
 
-			const finalOptions = { ...defaultOptions, ...options };
+			const finalOptions = { ...defaultOptions, ...options }
 
 			logger.silentImageProcess(
-				`Генерация ${finalOptions.width}x${finalOptions.height}, качество ${finalOptions.quality}%`,
-			);
+				`Генерация ${finalOptions.width}x${finalOptions.height}, качество ${finalOptions.quality}%`
+			)
 
 			// Сначала получаем данные клуба
-			const { club } = await this.getClubAndPlayersData(data);
+			const { club } = await this.getClubAndPlayersData(data)
 
 			// Генерируем HTML
-			const html = await this.generateHTML(data, finalOptions);
+			const html = await this.generateHTML(data, finalOptions)
 
 			// Генерируем изображение через оптимизированный пул браузеров
-			const startTime = Date.now();
+			const startTime = Date.now()
 
 			const imageBuffer = await puppeteerPoolService.generateImage({
 				html,
@@ -664,42 +657,42 @@ export class ImageGenerationService {
 				viewportHeight: finalOptions.height,
 				quality: finalOptions.quality,
 				optimizeForSpeed: finalOptions.optimizeForSpeed,
-			});
+			})
 
-			const duration = Date.now() - startTime;
+			const duration = Date.now() - startTime
 
 			// Логируем результат через оптимизированный метод
-			logger.imageGenerated(true, undefined, duration);
+			logger.imageGenerated(true, undefined, duration)
 
 			// Диагностика Buffer сразу после генерации
-			logger.info(`🔬 Диагностика Buffer после генерации:`, 'IMAGE_GENERATION');
-			logger.info(`  - Размер: ${imageBuffer.length}`, 'IMAGE_GENERATION');
-			logger.info(`  - Тип: ${typeof imageBuffer}`, 'IMAGE_GENERATION');
+			logger.info(`🔬 Диагностика Buffer после генерации:`, 'IMAGE_GENERATION')
+			logger.info(`  - Размер: ${imageBuffer.length}`, 'IMAGE_GENERATION')
+			logger.info(`  - Тип: ${typeof imageBuffer}`, 'IMAGE_GENERATION')
 			logger.info(
 				`  - Конструктор: ${imageBuffer.constructor.name}`,
-				'IMAGE_GENERATION',
-			);
+				'IMAGE_GENERATION'
+			)
 			logger.info(
 				`  - Buffer.isBuffer: ${Buffer.isBuffer(imageBuffer)}`,
-				'IMAGE_GENERATION',
-			);
+				'IMAGE_GENERATION'
+			)
 			logger.info(
 				`  - instanceof Buffer: ${imageBuffer instanceof Buffer}`,
-				'IMAGE_GENERATION',
-			);
+				'IMAGE_GENERATION'
+			)
 
 			return {
 				imageBuffer,
 				club: { name: club.name },
-			};
+			}
 		} catch (error) {
-			logger.imageGenerated(false);
+			logger.imageGenerated(false)
 			logger.error(
 				'Ошибка при генерации изображения',
 				'IMAGE_GENERATION',
-				error as Error,
-			);
-			throw error;
+				error as Error
+			)
+			throw error
 		}
 	}
 
@@ -707,34 +700,34 @@ export class ImageGenerationService {
 	 * Очищает устаревший кэш ресурсов
 	 */
 	public cleanExpiredCache() {
-		const now = Date.now();
+		const now = Date.now()
 
 		// Очищаем устаревшие шрифты
 		for (const [key, value] of this.resourcesCache.fonts.entries()) {
 			if (!this.isCacheValid(value.timestamp)) {
-				this.resourcesCache.fonts.delete(key);
+				this.resourcesCache.fonts.delete(key)
 			}
 		}
 
 		// Очищаем устаревшие изображения
 		for (const [key, value] of this.resourcesCache.images.entries()) {
 			if (!this.isCacheValid(value.timestamp)) {
-				this.resourcesCache.images.delete(key);
+				this.resourcesCache.images.delete(key)
 			}
 		}
 
-		logger.silentImageProcess('Очищен устаревший кэш ресурсов');
+		logger.silentImageProcess('Очищен устаревший кэш ресурсов')
 	}
 
 	/**
 	 * Полная очистка кэша при завершении работы
 	 */
 	public async cleanup() {
-		this.resourcesCache.fonts.clear();
-		this.resourcesCache.images.clear();
-		this.resourcesCache.isInitialized = false;
-		logger.info('Кэш ресурсов полностью очищен', 'IMAGE_GENERATION');
+		this.resourcesCache.fonts.clear()
+		this.resourcesCache.images.clear()
+		this.resourcesCache.isInitialized = false
+		logger.info('Кэш ресурсов полностью очищен', 'IMAGE_GENERATION')
 	}
 }
 
-export const imageGenerationService = ImageGenerationService.getInstance();
+export const imageGenerationService = ImageGenerationService.getInstance()

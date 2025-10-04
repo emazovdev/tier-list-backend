@@ -1,28 +1,23 @@
-import { Response, NextFunction } from 'express';
+import { NextFunction, Response } from 'express'
+import { prisma } from '../prisma'
+import { TimewebStorageService } from '../services/timewebStorage.service'
+import { TelegramRequest } from '../types/api'
 import {
-	TelegramRequest,
-	ClubWithSignedUrl,
-	PlayerWithSignedUrl,
-} from '../types/api';
-import { prisma } from '../prisma';
-import { StorageService } from '../services/storage.service';
-import {
-	withCache,
-	invalidateCache,
-	invalidateClubsCache,
 	createCacheOptions,
-} from '../utils/cacheUtils';
-import { isUserAdmin, getTelegramIdFromRequest } from '../utils/roleUtils';
+	invalidateClubsCache,
+	withCache,
+} from '../utils/cacheUtils'
+import { getTelegramIdFromRequest, isUserAdmin } from '../utils/roleUtils'
 
 // Создаем экземпляр сервиса для хранилища
-const storageService = new StorageService();
+const storageService = new TimewebStorageService()
 
 // Константы для кэширования
 const CACHE_KEYS = {
 	ALL_CLUBS: 'cache:clubs:all',
 	CLUB_BY_ID: 'cache:clubs:id:',
 	CLUBS_WITH_PLAYERS: 'cache:clubs:with_players:',
-};
+}
 
 /**
  * Создание нового клуба (только для админа)
@@ -30,26 +25,26 @@ const CACHE_KEYS = {
 export const createClub = async (
 	req: TelegramRequest,
 	res: Response,
-	next: NextFunction,
+	next: NextFunction
 ): Promise<void> => {
 	try {
-		const { name } = req.body;
-		const file = req.file;
+		const { name } = req.body
+		const file = req.file
 
 		if (!name) {
-			res.status(400).json({ error: 'Название клуба обязательно' });
-			return;
+			res.status(400).json({ error: 'Название клуба обязательно' })
+			return
 		}
 
 		const isClubExists = await prisma.club.findFirst({
 			where: {
 				name,
 			},
-		});
+		})
 
 		if (isClubExists) {
-			res.status(400).json({ error: 'Клуб с таким названием уже существует' });
-			return;
+			res.status(400).json({ error: 'Клуб с таким названием уже существует' })
+			return
 		}
 
 		// Если файл не загружен, создаем клуб без логотипа
@@ -59,10 +54,10 @@ export const createClub = async (
 					name,
 					logo: '',
 				},
-			});
+			})
 
 			// Инвалидируем все связанные кэши
-			await invalidateClubsCache();
+			await invalidateClubsCache()
 
 			res.status(201).json({
 				ok: true,
@@ -71,12 +66,12 @@ export const createClub = async (
 					name: club.name,
 					logoUrl: '',
 				},
-			});
-			return;
+			})
+			return
 		}
 
 		// Загружаем файл в R2 и получаем ключ файла
-		const logoKey = await storageService.uploadFile(file, 'clubs');
+		const logoKey = await storageService.uploadFile(file, 'clubs')
 
 		// Создаем клуб с ключом логотипа
 		const club = await prisma.club.create({
@@ -84,15 +79,15 @@ export const createClub = async (
 				name,
 				logo: logoKey,
 			},
-		});
+		})
 
 		// Генерируем оптимизированный URL для доступа к логотипу
 		const logoUrl = club.logo
 			? await storageService.getFastImageUrl(club.logo, 'logo')
-			: '';
+			: ''
 
 		// Инвалидируем все связанные кэши
-		await invalidateClubsCache();
+		await invalidateClubsCache()
 
 		res.status(201).json({
 			ok: true,
@@ -101,12 +96,12 @@ export const createClub = async (
 				name: club.name,
 				logoUrl,
 			},
-		});
+		})
 	} catch (err: any) {
-		console.error('Ошибка при создании клуба:', err);
-		res.status(500).json({ error: 'Ошибка при создании клуба' });
+		console.error('Ошибка при создании клуба:', err)
+		res.status(500).json({ error: 'Ошибка при создании клуба' })
 	}
-};
+}
 
 /**
  * Получение списка всех клубов (доступно всем пользователям)
@@ -114,60 +109,57 @@ export const createClub = async (
 export const getAllClubs = async (
 	req: TelegramRequest,
 	res: Response,
-	next: NextFunction,
+	next: NextFunction
 ): Promise<void> => {
 	try {
 		// Проверяем, является ли пользователь админом
-		const telegramId = getTelegramIdFromRequest(req);
-		const isAdmin = telegramId ? await isUserAdmin(telegramId) : false;
+		const telegramId = getTelegramIdFromRequest(req)
+		const isAdmin = telegramId ? await isUserAdmin(telegramId) : false
 
 		// Создаем опции кэширования с учетом роли пользователя
-		const cacheOptions = createCacheOptions(isAdmin, { ttl: 3600 });
+		const cacheOptions = createCacheOptions(isAdmin, { ttl: 3600 })
 
 		// Используем кэширование для получения списка клубов
 		const formattedClubs = await withCache(
 			async () => {
 				const clubs = await prisma.club.findMany({
 					orderBy: { name: 'asc' },
-				});
+				})
 
 				// Собираем все ключи логотипов для батч-обработки
 				const logoKeys = clubs
-					.map((club) => club.logo)
-					.filter(Boolean) as string[];
+					.map(club => club.logo)
+					.filter(Boolean) as string[]
 
 				// Получаем все URL за один раз
-				const logoUrls = await storageService.getBatchFastUrls(
-					logoKeys,
-					'logo',
-				);
+				const logoUrls = await storageService.getBatchFastUrls(logoKeys, 'logo')
 
 				// Формируем ответ с предварительно полученными URL
-				const result = clubs.map((club) => ({
+				const result = clubs.map(club => ({
 					id: club.id,
 					name: club.name,
 					logoUrl: club.logo ? logoUrls[club.logo] || '' : '',
-				}));
+				}))
 
-				return result;
+				return result
 			},
 			CACHE_KEYS.ALL_CLUBS,
-			cacheOptions,
-		);
+			cacheOptions
+		)
 
 		res.json({
 			ok: true,
 			clubs: formattedClubs,
-		});
+		})
 	} catch (err: any) {
 		console.error('❌ Ошибка при получении клубов:', {
 			error: err.message,
 			stack: err.stack,
 			timestamp: new Date().toISOString(),
-		});
-		res.status(500).json({ error: 'Ошибка при получении клубов' });
+		})
+		res.status(500).json({ error: 'Ошибка при получении клубов' })
 	}
-};
+}
 
 /**
  * Получение информации о конкретном клубе по ID
@@ -175,22 +167,22 @@ export const getAllClubs = async (
 export const getClubById = async (
 	req: TelegramRequest,
 	res: Response,
-	next: NextFunction,
+	next: NextFunction
 ): Promise<void> => {
 	try {
-		const { id } = req.params;
+		const { id } = req.params
 
 		if (!id) {
-			res.status(400).json({ error: 'ID клуба обязателен' });
-			return;
+			res.status(400).json({ error: 'ID клуба обязателен' })
+			return
 		}
 
 		// Проверяем, является ли пользователь админом
-		const telegramId = getTelegramIdFromRequest(req);
-		const isAdmin = telegramId ? await isUserAdmin(telegramId) : false;
+		const telegramId = getTelegramIdFromRequest(req)
+		const isAdmin = telegramId ? await isUserAdmin(telegramId) : false
 
 		// Создаем опции кэширования с учетом роли пользователя
-		const cacheOptions = createCacheOptions(isAdmin, { ttl: 3600 });
+		const cacheOptions = createCacheOptions(isAdmin, { ttl: 3600 })
 
 		// Используем кэширование для получения информации о клубе
 		const clubData = await withCache(
@@ -204,59 +196,59 @@ export const getClubById = async (
 							orderBy: { name: 'asc' },
 						},
 					},
-				});
+				})
 
 				if (!club) {
-					return null;
+					return null
 				}
 
 				// Собираем все ключи изображений для батч-обработки
-				const logoKey = club.logo ? [club.logo] : [];
+				const logoKey = club.logo ? [club.logo] : []
 				const avatarKeys = club.players
-					.map((player) => player.avatar)
-					.filter(Boolean) as string[];
+					.map(player => player.avatar)
+					.filter(Boolean) as string[]
 
 				// Получаем все URL за один раз
 				const [logoUrls, avatarUrls] = await Promise.all([
 					storageService.getBatchFastUrls(logoKey, 'logo'),
 					storageService.getBatchFastUrls(avatarKeys, 'avatar'),
-				]);
+				])
 
 				// URL для логотипа
-				const logoUrl = club.logo ? logoUrls[club.logo] || '' : '';
+				const logoUrl = club.logo ? logoUrls[club.logo] || '' : ''
 
 				// Игроки с аватарами
-				const players = club.players.map((player) => ({
+				const players = club.players.map(player => ({
 					id: player.id,
 					name: player.name,
 					avatarUrl: player.avatar ? avatarUrls[player.avatar] || '' : '',
-				}));
+				}))
 
 				return {
 					id: club.id,
 					name: club.name,
 					logoUrl,
 					players,
-				};
+				}
 			},
 			`${CACHE_KEYS.CLUB_BY_ID}${id}`,
-			cacheOptions,
-		);
+			cacheOptions
+		)
 
 		if (!clubData) {
-			res.status(404).json({ error: 'Клуб не найден' });
-			return;
+			res.status(404).json({ error: 'Клуб не найден' })
+			return
 		}
 
 		res.json({
 			ok: true,
 			club: clubData,
-		});
+		})
 	} catch (err: any) {
-		console.error('Ошибка при получении клуба:', err);
-		res.status(500).json({ error: 'Ошибка при получении клуба' });
+		console.error('Ошибка при получении клуба:', err)
+		res.status(500).json({ error: 'Ошибка при получении клуба' })
 	}
-};
+}
 
 /**
  * Обновление информации о клубе (только для админа)
@@ -264,16 +256,16 @@ export const getClubById = async (
 export const updateClub = async (
 	req: TelegramRequest,
 	res: Response,
-	next: NextFunction,
+	next: NextFunction
 ): Promise<void> => {
 	try {
-		const { id } = req.params;
-		const { name } = req.body;
-		const file = req.file;
+		const { id } = req.params
+		const { name } = req.body
+		const file = req.file
 
 		if (!id) {
-			res.status(400).json({ error: 'ID клуба обязателен' });
-			return;
+			res.status(400).json({ error: 'ID клуба обязателен' })
+			return
 		}
 
 		// Проверяем существование клуба
@@ -281,29 +273,29 @@ export const updateClub = async (
 			where: {
 				id,
 			},
-		});
+		})
 
 		if (!club) {
-			res.status(404).json({ error: 'Клуб не найден' });
-			return;
+			res.status(404).json({ error: 'Клуб не найден' })
+			return
 		}
 
-		let logoKey = club.logo;
+		let logoKey = club.logo
 
 		// Если загружен новый файл, обновляем логотип
 		if (file) {
 			// Если у клуба уже был логотип, удаляем старый файл
 			if (club.logo) {
 				try {
-					await storageService.deleteFile(club.logo);
+					await storageService.deleteFile(club.logo)
 				} catch (error) {
-					console.error('Ошибка при удалении старого логотипа:', error);
+					console.error('Ошибка при удалении старого логотипа:', error)
 					// Продолжаем выполнение даже при ошибке удаления
 				}
 			}
 
 			// Загружаем новый файл
-			logoKey = await storageService.uploadFile(file, 'clubs');
+			logoKey = await storageService.uploadFile(file, 'clubs')
 		}
 
 		// Обновляем данные клуба
@@ -315,15 +307,15 @@ export const updateClub = async (
 				name: name || club.name,
 				logo: logoKey,
 			},
-		});
+		})
 
 		// Инвалидируем все связанные кэши
-		await invalidateClubsCache();
+		await invalidateClubsCache()
 
 		// URL для логотипа
 		const logoUrl = updatedClub.logo
 			? await storageService.getFastImageUrl(updatedClub.logo, 'logo')
-			: '';
+			: ''
 
 		res.json({
 			ok: true,
@@ -332,12 +324,12 @@ export const updateClub = async (
 				name: updatedClub.name,
 				logoUrl,
 			},
-		});
+		})
 	} catch (err: any) {
-		console.error('Ошибка при обновлении клуба:', err);
-		res.status(500).json({ error: 'Ошибка при обновлении клуба' });
+		console.error('Ошибка при обновлении клуба:', err)
+		res.status(500).json({ error: 'Ошибка при обновлении клуба' })
 	}
-};
+}
 
 /**
  * Удаление клуба (только для админа)
@@ -345,14 +337,14 @@ export const updateClub = async (
 export const deleteClub = async (
 	req: TelegramRequest,
 	res: Response,
-	next: NextFunction,
+	next: NextFunction
 ): Promise<void> => {
 	try {
-		const { id } = req.params;
+		const { id } = req.params
 
 		if (!id) {
-			res.status(400).json({ error: 'ID клуба обязателен' });
-			return;
+			res.status(400).json({ error: 'ID клуба обязателен' })
+			return
 		}
 
 		// Проверяем существование клуба
@@ -364,25 +356,29 @@ export const deleteClub = async (
 				players: true,
 				playerStatistics: true, // Добавляем статистики для полной информации
 			},
-		});
+		})
 
 		if (!club) {
-			res.status(404).json({ error: 'Клуб не найден' });
-			return;
+			res.status(404).json({ error: 'Клуб не найден' })
+			return
 		}
 
-		console.log(`🗑️ Начинаем удаление клуба: ${club.name} (ID: ${id})`);
-		console.log(`📊 Найдено ${club.players.length} игроков и ${club.playerStatistics.length} записей статистики`);
+		console.log(`🗑️ Начинаем удаление клуба: ${club.name} (ID: ${id})`)
+		console.log(
+			`📊 Найдено ${club.players.length} игроков и ${club.playerStatistics.length} записей статистики`
+		)
 
 		// Выполняем все операции удаления в транзакции для обеспечения целостности данных
-		await prisma.$transaction(async (tx) => {
+		await prisma.$transaction(async tx => {
 			// 1. КРИТИЧЕСКИ ВАЖНО: Сначала удаляем все статистики игроков
 			const deletedStatsCount = await tx.playerStatistics.deleteMany({
 				where: {
 					clubId: id,
 				},
-			});
-			console.log(`📊 Удалено ${deletedStatsCount.count} записей статистики для клуба ${id}`);
+			})
+			console.log(
+				`📊 Удалено ${deletedStatsCount.count} записей статистики для клуба ${id}`
+			)
 
 			// 2. Удаляем всех игроков клуба (после удаления их статистик)
 			if (club.players.length > 0) {
@@ -390,8 +386,10 @@ export const deleteClub = async (
 					where: {
 						clubId: id,
 					},
-				});
-				console.log(`👥 Удалено ${deletedPlayersCount.count} игроков для клуба ${id}`);
+				})
+				console.log(
+					`👥 Удалено ${deletedPlayersCount.count} игроков для клуба ${id}`
+				)
 			}
 
 			// 3. Обнуляем clubId в игровых сессиях, связанных с удаляемым клубом
@@ -403,73 +401,79 @@ export const deleteClub = async (
 				data: {
 					clubId: null,
 				},
-			});
-			console.log(`🎮 Обновлено ${updatedSessionsCount.count} игровых сессий для клуба ${id}`);
+			})
+			console.log(
+				`🎮 Обновлено ${updatedSessionsCount.count} игровых сессий для клуба ${id}`
+			)
 
 			// 4. Удаляем сам клуб
 			await tx.club.delete({
 				where: {
 					id,
 				},
-			});
-			console.log(`🏟️ Клуб ${club.name} удален из базы данных`);
-		});
+			})
+			console.log(`🏟️ Клуб ${club.name} удален из базы данных`)
+		})
 
 		// Удаляем файлы из хранилища ПОСЛЕ успешного удаления из БД
 		// Если удаление из БД не удалось, файлы останутся (что лучше чем потерять данные)
-		
+
 		// Удаляем аватары игроков
 		if (club.players.length > 0) {
-			console.log(`🖼️ Удаляем ${club.players.length} аватаров игроков...`);
-			let deletedAvatarsCount = 0;
+			console.log(`🖼️ Удаляем ${club.players.length} аватаров игроков...`)
+			let deletedAvatarsCount = 0
 			for (const player of club.players) {
 				if (player.avatar) {
 					try {
-						await storageService.deleteFile(player.avatar);
-						deletedAvatarsCount++;
+						await storageService.deleteFile(player.avatar)
+						deletedAvatarsCount++
 					} catch (error) {
 						console.error(
 							`⚠️ Ошибка при удалении аватара игрока ${player.name} (${player.id}):`,
-							error,
-						);
+							error
+						)
 						// Продолжаем выполнение даже при ошибке удаления файла
 					}
 				}
 			}
-			console.log(`✅ Удалено ${deletedAvatarsCount} аватаров игроков`);
+			console.log(`✅ Удалено ${deletedAvatarsCount} аватаров игроков`)
 		}
 
 		// Удаляем логотип клуба
 		if (club.logo) {
 			try {
-				await storageService.deleteFile(club.logo);
-				console.log(`🏷️ Логотип клуба ${club.name} удален из хранилища`);
+				await storageService.deleteFile(club.logo)
+				console.log(`🏷️ Логотип клуба ${club.name} удален из хранилища`)
 			} catch (error) {
-				console.error(`⚠️ Ошибка при удалении логотипа клуба ${club.name}:`, error);
+				console.error(
+					`⚠️ Ошибка при удалении логотипа клуба ${club.name}:`,
+					error
+				)
 				// Продолжаем выполнение даже при ошибке удаления файла
 			}
 		}
 
 		// Инвалидируем все связанные кэши
-		await invalidateClubsCache();
-		console.log(`🔄 Кэш клубов очищен`);
+		await invalidateClubsCache()
+		console.log(`🔄 Кэш клубов очищен`)
 
-		console.log(`✅ Клуб ${club.name} и все связанные данные успешно удалены`);
+		console.log(`✅ Клуб ${club.name} и все связанные данные успешно удалены`)
 
 		res.json({
 			ok: true,
-			message: 'Клуб, игроки, статистики и все связанные данные успешно удалены',
+			message:
+				'Клуб, игроки, статистики и все связанные данные успешно удалены',
 			deletedData: {
 				club: club.name,
 				playersCount: club.players.length,
 				statisticsCount: club.playerStatistics.length,
 			},
-		});
+		})
 	} catch (err: any) {
-		console.error('❌ Ошибка при удалении клуба:', err);
-		res.status(500).json({ 
+		console.error('❌ Ошибка при удалении клуба:', err)
+		res.status(500).json({
 			error: 'Ошибка при удалении клуба',
-			details: err.message 
-		});
+			details: err.message,
+		})
 	}
-};
+}

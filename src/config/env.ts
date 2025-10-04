@@ -64,6 +64,15 @@ export const config = {
 		endpoint: getEnvVar('R2_ENDPOINT'),
 		publicDomain: getEnvVar('R2_PUBLIC_DOMAIN', ''),
 	},
+	// Новый блок конфигурации для Timeweb S3
+	s3: {
+		accessKey: getEnvVar('S3_ACCESS_KEY'),
+		secretKey: getEnvVar('S3_SECRET_KEY'),
+		bucketName: getEnvVar('S3_BUCKET_NAME'),
+		endpoint: getEnvVar('S3_URL'),
+		region: getEnvVar('S3_REGION'),
+		publicDomain: getEnvVar('S3_PUBLIC_DOMAIN', ''),
+	},
 	redis: {
 		url: getRedisUrl(),
 	},

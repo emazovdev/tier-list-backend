@@ -173,10 +173,14 @@ export async function invalidateAnalyticsCache(): Promise<void> {
  */
 export const invalidateImageUrlCache = (): void => {
 	try {
-		// Импортируем StorageService динамически чтобы избежать циклических зависимостей
-		const { StorageService } = require('../services/storage.service')
-		const storageService = new StorageService()
-		storageService.clearUrlCache()
+		// Импортируем TimewebStorageService динамически чтобы избежать циклических зависимостей
+		const {
+			TimewebStorageService,
+		} = require('../services/timewebStorage.service')
+		const storageService = new TimewebStorageService()
+		if (typeof storageService.clearUrlCache === 'function') {
+			storageService.clearUrlCache()
+		}
 
 		console.log('✅ Кэш изображений успешно обновлен')
 	} catch (error) {
