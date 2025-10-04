@@ -35,11 +35,14 @@ export class TelegramBotService {
 	private bot: TelegramBot | null = null
 	private isClusterMaster: boolean
 	private releaseSessions: Map<string, ReleaseSession> = new Map()
+	private warnedChats: Set<string> = new Set()
 
 	// Настройки рассылки
 	private static readonly BROADCAST_BATCH_SIZE = 25 // сколько сообщений параллельно
 	private static readonly BROADCAST_DELAY_BETWEEN_BATCH = 1500 // мс пауза между батчами (~16-17 msg/s)
 	private static readonly UPDATE_EVERY_BATCHES = 10 // как часто редактировать прогресс
+	private static readonly GROUP_WARNING =
+		'Этот бот не предназначен для групп и каналов. Пожалуйста, используйте приватный чат с ботом.'
 
 	constructor() {
 		// Проверяем, является ли процесс master в кластере
@@ -120,6 +123,7 @@ export class TelegramBotService {
 		this.bot.onText(/\/start/, async msg => {
 			try {
 				const chatId = msg.chat.id
+				const chatType = msg.chat.type
 				const userName =
 					msg.from?.username || msg.from?.first_name || 'пользователь'
 
@@ -127,7 +131,18 @@ export class TelegramBotService {
 					`📱 Команда /start от пользователя: ${userName} (${chatId})`,
 					'TELEGRAM_BOT'
 				)
-				await this.sendWebAppButton(chatId)
+				if (chatType !== 'private') {
+					const key = String(chatId)
+					if (!this.warnedChats.has(key)) {
+						await this.bot?.sendMessage(
+							chatId,
+							TelegramBotService.GROUP_WARNING
+						)
+						this.warnedChats.add(key)
+					}
+					return
+				}
+				await this.sendWebAppButton(chatId, chatType)
 			} catch (error) {
 				logger.error(
 					'❌ Ошибка обработки команды /start:',
@@ -452,7 +467,21 @@ export class TelegramBotService {
 		this.bot.on('message', async msg => {
 			try {
 				const chatId = msg.chat.id
+				const chatType = msg.chat.type
 				const telegramId = msg.from?.id?.toString()
+
+				// Ограничение для групп/каналов: показать предупреждение один раз
+				if (chatType !== 'private') {
+					const key = String(chatId)
+					if (!this.warnedChats.has(key)) {
+						await this.bot?.sendMessage(
+							chatId,
+							TelegramBotService.GROUP_WARNING
+						)
+						this.warnedChats.add(key)
+					}
+					return
+				}
 
 				// Если есть сессия релиза — обрабатываем её в приоритете
 				if (telegramId) {
@@ -519,7 +548,7 @@ export class TelegramBotService {
 					!msg.text.startsWith('/cleanup') &&
 					!msg.text.startsWith('/release')
 				) {
-					await this.sendWebAppButton(chatId)
+					await this.sendWebAppButton(chatId, chatType)
 				}
 			} catch (error) {
 				logger.error('❌ Ошибка обработки сообщения:', 'TELEGRAM_BOT', error)
@@ -530,7 +559,7 @@ export class TelegramBotService {
 	/**
 	 * Отправляет сообщение с кнопкой для открытия веб-приложения
 	 */
-	private async sendWebAppButton(chatId: number) {
+	private async sendWebAppButton(chatId: number, chatType?: string) {
 		if (!this.bot) {
 			logger.warn(
 				'⚠️ Попытка отправить сообщение, но бот не инициализирован!',
@@ -543,17 +572,23 @@ export class TelegramBotService {
 			let messageText = 'Добро пожаловать в Myach Pro! ⚽'
 			let markup: any = {}
 
+			const type = chatType ?? (await this.getChatTypeSafe(chatId))
+			const isPrivate = type === 'private'
+
 			if (config.webApp.url.startsWith('https://')) {
-				messageText += '\n\nНажмите кнопку ниже, чтобы создать свой тир-лист:'
-				const inlineKeyboard = [
-					[
-						{
-							text: 'Открыть Тир Лист',
-							web_app: { url: config.webApp.url },
-						},
-					],
-				]
-				markup = { reply_markup: { inline_keyboard: inlineKeyboard } }
+				if (isPrivate) {
+					messageText += '\n\nНажмите кнопку ниже, чтобы создать свой тир-лист:'
+					const inlineKeyboard = [
+						[{ text: 'Открыть Тир Лист', web_app: { url: config.webApp.url } }],
+					]
+					markup = { reply_markup: { inline_keyboard: inlineKeyboard } }
+				} else {
+					messageText += `\n\nНажмите кнопку или перейдите по ссылке, чтобы открыть приложение: ${config.webApp.url}`
+					const inlineKeyboard = [
+						[{ text: 'Открыть Тир Лист', url: config.webApp.url }],
+					]
+					markup = { reply_markup: { inline_keyboard: inlineKeyboard } }
+				}
 			} else {
 				messageText += `\n\n🔗 Для открытия приложения перейдите по ссылке: ${config.webApp.url}\n\n⚠️ Внимание: WebApp кнопки работают только с HTTPS URL`
 			}
@@ -571,16 +606,40 @@ export class TelegramBotService {
 	/**
 	 * Кнопка запуска мини-аппа
 	 */
-	private buildAppKeyboard(): SendMessageOptions | SendPhotoOptions {
+	private buildAppKeyboard(
+		chatType?: string
+	): SendMessageOptions | SendPhotoOptions {
 		const inlineKeyboard: any[] = []
+		const isPrivate = chatType === 'private'
 		if (config.webApp.url.startsWith('https://')) {
-			inlineKeyboard.push([
-				{ text: 'Открыть Тир Лист', web_app: { url: config.webApp.url } },
-			])
+			if (isPrivate) {
+				inlineKeyboard.push([
+					{ text: 'Открыть Тир Лист', web_app: { url: config.webApp.url } },
+				])
+			} else {
+				inlineKeyboard.push([
+					{ text: 'Открыть Тир Лист', url: config.webApp.url },
+				])
+			}
 		}
 		return inlineKeyboard.length
 			? { reply_markup: { inline_keyboard: inlineKeyboard } }
 			: {}
+	}
+
+	/**
+	 * Безопасно получает тип чата: 'private' | 'group' | 'supergroup' | 'channel'
+	 */
+	private async getChatTypeSafe(
+		chatId: number | string
+	): Promise<string | undefined> {
+		if (!this.bot) return
+		try {
+			const chat: any = await this.bot.getChat(chatId as any)
+			return chat?.type
+		} catch {
+			return undefined
+		}
 	}
 
 	/**
@@ -936,16 +995,21 @@ export class TelegramBotService {
 								throw new Error('Бот недоступен')
 							}
 
-							// Создаем инлайн кнопку для запуска бота
-							const inlineKeyboard = []
-
-							// Добавляем кнопку запуска бота, если URL доступен
+							// Определяем тип чата и создаём инлайн кнопку
+							const chatType = await this.getChatTypeSafe(chatId)
+							const isPrivate = chatType === 'private'
+							const inlineKeyboard: any[] = []
 							if (config.webApp.url.startsWith('https://')) {
 								inlineKeyboard.push([
-									{
-										text: '🎯 Создать свой тир-лист',
-										web_app: { url: config.webApp.url },
-									},
+									isPrivate
+										? {
+												text: '🎯 Создать свой тир-лист',
+												web_app: { url: config.webApp.url },
+										  }
+										: {
+												text: '🎯 Создать свой тир-лист',
+												url: config.webApp.url,
+										  },
 								])
 							}
 
@@ -1131,16 +1195,18 @@ export class TelegramBotService {
 				throw new Error('Бот недоступен')
 			}
 
-			// Создаем инлайн кнопку для запуска бота
-			const inlineKeyboard = []
-
-			// Добавляем кнопку запуска бота, если URL доступен
+			// Определяем тип чата и создаём инлайн кнопку
+			const chatType = await this.getChatTypeSafe(chatId)
+			const isPrivate = chatType === 'private'
+			const inlineKeyboard: any[] = []
 			if (config.webApp.url.startsWith('https://')) {
 				inlineKeyboard.push([
-					{
-						text: '🎯 Создать свой тир-лист',
-						web_app: { url: config.webApp.url },
-					},
+					isPrivate
+						? {
+								text: '🎯 Создать свой тир-лист',
+								web_app: { url: config.webApp.url },
+						  }
+						: { text: '🎯 Создать свой тир-лист', url: config.webApp.url },
 				])
 			}
 
