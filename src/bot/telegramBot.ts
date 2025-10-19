@@ -25,6 +25,7 @@ interface ReleaseSession {
 	previewMessageId?: number // сообщение с превью (для скрытия кнопок)
 	progressMessageId?: number // одно сообщение с прогрессом (редактируем)
 	cancelRequested?: boolean // флаг отмены рассылки
+	confirmMessageId?: number // сообщение с кнопками подтверждения
 }
 
 /**
@@ -361,12 +362,18 @@ export class TelegramBotService {
 					await this.bot?.answerCallbackQuery(query.id, {
 						text: '⛔ Остановка запрошена.',
 					})
-					// Скрываем кнопку стоп, чтобы не тыкали по сто раз
+					// Скрываем кнопку стоп в прогрессе и подтверждении
 					if (session.progressMessageId) {
 						await this.safeEditProgress(
 							session,
 							`⛔ Остановка запрошена...`,
 							true /*removeKeyboard*/
+						)
+					}
+					if (session.confirmMessageId) {
+						await this.bot!.editMessageReplyMarkup(
+							{ inline_keyboard: [] },
+							{ chat_id: session.chatId, message_id: session.confirmMessageId }
 						)
 					}
 					return
@@ -385,11 +392,20 @@ export class TelegramBotService {
 				if (data === 'release_cancel') {
 					this.releaseSessions.delete(telegramId)
 					await this.bot?.answerCallbackQuery(query.id, { text: 'Отменено.' })
-					// Прячем кнопки у превью
-					if (session.previewMessageId) {
+					// Оставляем у сообщения подтверждения только кнопку остановки на время рассылки
+					if (session.confirmMessageId) {
 						await this.bot!.editMessageReplyMarkup(
-							{ inline_keyboard: [] },
-							{ chat_id: session.chatId, message_id: session.previewMessageId }
+							{
+								inline_keyboard: [
+									[
+										{
+											text: '❌ Остановить рассылку',
+											callback_data: 'release_stop',
+										},
+									],
+								],
+							},
+							{ chat_id: session.chatId, message_id: session.confirmMessageId }
 						)
 					}
 					await this.bot?.sendMessage(session.chatId, '❌ Рассылка отменена.')
@@ -412,6 +428,13 @@ export class TelegramBotService {
 						await this.bot!.editMessageReplyMarkup(
 							{ inline_keyboard: [] },
 							{ chat_id: session.chatId, message_id: session.previewMessageId }
+						)
+					}
+					// Прячем кнопки у сообщения подтверждения
+					if (session.confirmMessageId) {
+						await this.bot!.editMessageReplyMarkup(
+							{ inline_keyboard: [] },
+							{ chat_id: session.chatId, message_id: session.confirmMessageId }
 						)
 					}
 
@@ -443,6 +466,16 @@ export class TelegramBotService {
 							'🏁 Готово.',
 							true /*removeKeyboard*/
 						)
+						// Снимаем клавиатуру у сообщения подтверждения
+						if (session.confirmMessageId) {
+							await this.bot!.editMessageReplyMarkup(
+								{ inline_keyboard: [] },
+								{
+									chat_id: session.chatId,
+									message_id: session.confirmMessageId,
+								}
+							)
+						}
 					} catch (e) {
 						logger.error('❌ Ошибка в broadcastRelease:', 'TELEGRAM_BOT', e)
 						await this.safeEditProgress(
@@ -651,6 +684,33 @@ export class TelegramBotService {
 		const { chatId, draft } = session
 		if (!this.bot || !draft) return
 
+		// 1) Превью с кнопкой веб-аппа
+		const webAppKeyboard: InlineKeyboardMarkup = {
+			inline_keyboard: [
+				[
+					{
+						text: '🎯 Открыть Тир Лист',
+						web_app: { url: config.webApp.url },
+					},
+				],
+			],
+		}
+
+		let previewMsgId: number | undefined
+		if (draft.photoFileId) {
+			const m = await this.bot.sendPhoto(chatId, draft.photoFileId, {
+				caption: draft.text || '',
+				reply_markup: webAppKeyboard,
+			})
+			previewMsgId = m.message_id
+		} else {
+			const m = await this.bot.sendMessage(chatId, draft.text || '(пусто)', {
+				reply_markup: webAppKeyboard,
+			})
+			previewMsgId = m.message_id
+		}
+
+		// 2) Отдельное сообщение с Подтвердить/Отменить
 		const confirmKeyboard: InlineKeyboardMarkup = {
 			inline_keyboard: [
 				[{ text: '✅ Отправить всем', callback_data: 'release_confirm' }],
@@ -658,18 +718,13 @@ export class TelegramBotService {
 			],
 		}
 
-		if (draft.photoFileId) {
-			const m = await this.bot.sendPhoto(chatId, draft.photoFileId, {
-				caption: draft.text || '',
-				reply_markup: confirmKeyboard,
-			})
-			return m.message_id
-		} else {
-			const m = await this.bot.sendMessage(chatId, draft.text || '(пусто)', {
-				reply_markup: confirmKeyboard,
-			})
-			return m.message_id
-		}
+		const confirmMsg = await this.bot.sendMessage(
+			chatId,
+			'Подтвердите отправку всем подписчикам.',
+			{ reply_markup: confirmKeyboard }
+		)
+		session.confirmMessageId = confirmMsg.message_id
+		return previewMsgId
 	}
 
 	/**
