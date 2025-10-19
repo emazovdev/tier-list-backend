@@ -733,7 +733,7 @@ export class TelegramBotService {
 	 */
 	private async broadcastRelease(session: ReleaseSession) {
 		if (!this.bot || !session.draft) return
-		const appKeyboard = this.buildAppKeyboard()
+		const appKeyboard = this.buildAppKeyboard('private')
 		const draft = session.draft
 
 		// Берём всех пользователей
